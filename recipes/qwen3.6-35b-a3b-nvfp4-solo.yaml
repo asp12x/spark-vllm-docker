@@ -1,17 +1,20 @@
 # Recipe: Qwen3.6-35B-A3B-NVFP4-Solo
 # Single DGX Spark (GB10) serving of nvidia/Qwen3.6-35B-A3B-NVFP4.
 #
-# Validated 2026-07-14 on Spark (OTA2607 July, driver 580.159.03) with the
-# vllm/vllm-openai:nightly image built 2026-07-14. Defaults below are Spark-TUNED
-# (not the model card's conservative 0.4 / 4), measured on a single GB10:
-#   * single-stream 106 tok/s (bandwidth-bound; util does not move this)
-#   * N=8 425 tok/s, N=16 552, N=32 782 tok/s aggregate
-#   * 17 GB free, swap 0 -> stable; KV 21.5x concurrency @ 262K ctx
+# Validated 2026-07-14 on Spark (OTA2607 July, driver 580.159.03).
+# PINNED to vllm/vllm-openai:v0.25.1 -- this is REQUIRED, not optional: the MTP
+# concurrency deadlock (engine hard-hangs at conc >=16 under sustained load) is a
+# vLLM 0.23.x bug, FIXED in 0.25.1. Do not run this MTP-on recipe on 0.23.x/nightly.
+# On 0.25.1, measured on a single GB10 (MTP-on):
+#   * sustained (vllm bench, 1024in/512out): conc16 = 1006 tok/s (TTFT 450ms, TPOT
+#     39ms), conc32 = 1327 tok/s -- no deadlock, server survives
+#   * single-stream ~106 tok/s; short-burst aggregate up to 782 tok/s @ N=32
 #   * character-perfect OCR on the vision path (multimodal: text + image + video in)
 #
-# GB10 MEMORY CEILING: gpu_memory_utilization 0.60 is the safe max for this model.
-#   0.70 dips to ~6 GB free on load (too tight); 0.85 OOM-thrashes the box (no BMC =
-#   physical recovery). Do NOT raise above 0.60 on a single 128GB Spark.
+# GB10 MEMORY: with MTP ON, gpu_memory_utilization 0.60 already lands ~104 GB used /
+#   17 GB free / swap 0 -- the stable sweet spot (MTP adds ~+22 GB vs MTP-off, so
+#   0.60-MTP-on == ~0.78-MTP-off). Do NOT raise above 0.60 with MTP on: 0.78+ OOM-
+#   thrashes the box (no BMC = physical recovery). 0.60 IS the sweet spot here.
 #
 # NOTE: sibling recipe qwen3.6-35b-a3b-nvfp4.yaml is a 2-GPU/ray CLUSTER config
 # (tensor_parallel: 2) and will NOT run on a single GB10 -- this "-solo" variant is
@@ -24,8 +27,8 @@ description: Single-Spark vLLM serving of nvidia/Qwen3.6-35B-A3B-NVFP4 (marlin M
 # HuggingFace model to download (ungated -- no token required)
 model: nvidia/Qwen3.6-35B-A3B-NVFP4
 
-# Container image this config was validated against
-container: vllm/vllm-openai:nightly
+# Container image this config REQUIRES (>=0.25.1 fixes the MTP concurrency deadlock)
+container: vllm/vllm-openai:v0.25.1
 cluster_only: false
 solo_only: true
 
