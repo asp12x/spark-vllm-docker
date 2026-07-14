@@ -2,16 +2,20 @@
 # Single DGX Spark (GB10) serving of nvidia/Qwen3.6-35B-A3B-NVFP4.
 #
 # Validated 2026-07-14 on Spark (OTA2607 July, driver 580.159.03) with the
-# vllm/vllm-openai:nightly image built 2026-07-14:
-#   * 106 tok/s single-stream, 264 tok/s @ N=8 concurrency
-#   * 78/121 GB used (42 GB free), 3.49M-token KV pool, 13.3x concurrency @ 262K ctx
+# vllm/vllm-openai:nightly image built 2026-07-14. Defaults below are Spark-TUNED
+# (not the model card's conservative 0.4 / 4), measured on a single GB10:
+#   * single-stream 106 tok/s (bandwidth-bound; util does not move this)
+#   * N=8 425 tok/s, N=16 552, N=32 782 tok/s aggregate
+#   * 17 GB free, swap 0 -> stable; KV 21.5x concurrency @ 262K ctx
 #   * character-perfect OCR on the vision path (multimodal: text + image + video in)
-# Flags follow the HuggingFace model-card DGX Spark recipe VERBATIM
-# (TP=1, fp8 KV, flashinfer attention, marlin MoE, MTP-3 speculative decoding).
 #
-# NOTE: the sibling recipe qwen3.6-35b-a3b-nvfp4.yaml is a 2-GPU / cluster config
-# (tensor_parallel: 2, ray executor) and will NOT run on a single GB10 -- this
-# "-solo" variant is the verified single-Spark choice.
+# GB10 MEMORY CEILING: gpu_memory_utilization 0.60 is the safe max for this model.
+#   0.70 dips to ~6 GB free on load (too tight); 0.85 OOM-thrashes the box (no BMC =
+#   physical recovery). Do NOT raise above 0.60 on a single 128GB Spark.
+#
+# NOTE: sibling recipe qwen3.6-35b-a3b-nvfp4.yaml is a 2-GPU/ray CLUSTER config
+# (tensor_parallel: 2) and will NOT run on a single GB10 -- this "-solo" variant is
+# the verified single-Spark choice.
 
 recipe_version: "1"
 name: Qwen3.6-35B-A3B-NVFP4-Solo
@@ -25,14 +29,14 @@ container: vllm/vllm-openai:nightly
 cluster_only: false
 solo_only: true
 
-# Default settings (overridable via CLI)
+# Spark-tuned defaults (measured; see header). 0.60 is the GB10 memory ceiling.
 defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.4
+  gpu_memory_utilization: 0.60
   max_model_len: 262144
-  max_num_seqs: 4
+  max_num_seqs: 32
   max_num_batched_tokens: 8192
 
 # The vLLM serve command template
