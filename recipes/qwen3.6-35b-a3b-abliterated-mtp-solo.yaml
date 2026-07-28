@@ -1,0 +1,72 @@
+# Recipe: Qwen3.6-35B-A3B-NVFP4-Solo
+# Single DGX Spark (GB10) serving of /root/.cache/huggingface/local-models/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4.
+#
+# Validated 2026-07-14 on Spark (OTA2607 July, driver 580.159.03).
+# PINNED to vllm/vllm-openai:v0.25.1 -- this is REQUIRED, not optional: the MTP
+# concurrency deadlock (engine hard-hangs at conc >=16 under sustained load) is a
+# vLLM 0.23.x bug, FIXED in 0.25.1. Do not run this MTP-on recipe on 0.23.x/nightly.
+# On 0.25.1, measured on a single GB10 (MTP-on):
+#   * sustained (vllm bench, 1024in/512out): conc16 = 1006 tok/s (TTFT 450ms, TPOT
+#     39ms), conc32 = 1327 tok/s -- no deadlock, server survives
+#   * single-stream ~106 tok/s; short-burst aggregate up to 782 tok/s @ N=32
+#   * character-perfect OCR on the vision path (multimodal: text + image + video in)
+#
+# GB10 MEMORY: with MTP ON, gpu_memory_utilization 0.60 already lands ~104 GB used /
+#   17 GB free / swap 0 -- the stable sweet spot (MTP adds ~+22 GB vs MTP-off, so
+#   0.60-MTP-on == ~0.78-MTP-off). Do NOT raise above 0.60 with MTP on: 0.78+ OOM-
+#   thrashes the box (no BMC = physical recovery). 0.60 IS the sweet spot here.
+#
+# NOTE: sibling recipe qwen3.6-35b-a3b-nvfp4.yaml is a 2-GPU/ray CLUSTER config
+# (tensor_parallel: 2) and will NOT run on a single GB10 -- this "-solo" variant is
+# the verified single-Spark choice.
+
+recipe_version: "1"
+name: Qwen3.6-35B-A3B-abliterated-NVFP4-MTP-Solo
+description: Single-Spark vLLM serving of /root/.cache/huggingface/local-models/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4 (marlin MoE, fp8 KV, MTP-3); multimodal text+image+video, 262K context
+
+# HuggingFace model to download (ungated -- no token required)
+model: /root/.cache/huggingface/local-models/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4
+
+# Container image this config REQUIRES (>=0.25.1 fixes the MTP concurrency deadlock)
+container: vllm/vllm-openai:v0.25.1
+cluster_only: false
+solo_only: true
+
+# Spark-tuned defaults (measured; see header). 0.60 is the GB10 memory ceiling.
+# 2026-07-28: lowered 0.60 -> 0.50 for SAFETY MARGIN. Measured: KV pool was
+# 5,453,734 tokens (concurrency 20.8x vs max_model_len 262,144) on a box with
+# only ~9.7 GB available and swap that had reached 14/15 GB. Frees ~12.2 GiB.
+# Context length is UNCHANGED; the pool stays far above 262,144. Do NOT raise
+# back above 0.60 with MTP on -- that limit still stands.
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 262144
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+
+# The vLLM serve command template
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4 \
+    --served-model-name qwen3.6-35b-a3b:abliterated \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --moe-backend marlin \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}}' \
+    --load-format fastsafetensors \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice
