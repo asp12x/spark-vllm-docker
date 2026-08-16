@@ -1,0 +1,120 @@
+# Recipe: Qwen3.8-27B-NVFP4 — SOLO / single GB10
+#
+# Qwen3.8-27B, released 2026-08-14. 27B DENSE (not MoE — read the perf note below),
+# hybrid attention: 48 of 64 layers are Gated DeltaNet linear attention, 16 are full
+# attention (full_attention_interval: 4). Native vision-language model (333 vision
+# tensors, image + video). Built-in MTP draft head. 262K native context.
+#
+# SOURCES (read 2026-08-15, do not configure this from memory):
+#   * HF card   https://huggingface.co/Qwen/Qwen3.8-27B
+#   * vLLM recipe  https://recipes.vllm.ai/Qwen/Qwen3.8-27B   (updated 2026-08-14)
+#   * verified against this box's own `vllm serve --help=all` on v0.27.1
+#
+# WHY NVFP4 AND NOT BF16 — this is the whole reason the recipe exists.
+# GB10 is bandwidth-bound (~301 GB/s unified) and a DENSE model re-reads every
+# weight per decode token, so decode speed is a division problem:
+#     BF16   55.6 GB weights ->  301/55.6 =  ~5.4 tok/s theoretical ceiling
+#     NVFP4  26.4 GB weights ->  301/26.4 = ~11.4 tok/s theoretical ceiling
+# BF16 also puts 55.6 GB of weights against the box's ~89 GB working ceiling
+# (util 0.70) before KV and the vision tower, and OOM-thrash on this box needs
+# PHYSICAL recovery — there is no BMC. NVFP4 is also what the official recipe serves.
+# These ceilings are ARITHMETIC, not measured. Measure before quoting them.
+#
+# EXPECT IT TO BE SLOW vs the incumbent, and do not read that as a broken config:
+# prod nemotron-3.5-lightning is 30B-A3B MoE (~3B active) and MEASURED ~93 tok/s.
+# This is a dense 27B — all 27B active every token. It is a QUALITY comparison,
+# not a throughput one. Compare benchmark quality per token, not tok/s.
+#
+# CHECKPOINT CHOICE: Inferact/Qwen3.8-27B-NVFP4 is the build the official vLLM
+# recipe names. VERIFIED before download that it keeps what the quantizer usually
+# drops — 15 `mtp.*` tensors and all 333 vision tensors (hf_ptq has historically
+# dropped MTP on this stack, forcing a graft; this build does not need one).
+# Alternatives, all also MTP-complete, if this one disappoints:
+#   unsloth/Qwen3.8-27B-NVFP4 23.4 GB | RadixArk 21.9 GB | sakamakismile MTP 20.6 GB
+#
+# IMAGE: v0.27.1 — already the running prod pin. VERIFIED this image's registry
+# knows Qwen3_5ForConditionalGeneration and Qwen3_5MTP, and that it ships
+# transformers 5.15.0 (recipe requires >= 5.8.0). No image bump needed.
+#
+# NO --moe-backend HERE. Every other Qwen recipe in this dir passes
+# `--moe-backend marlin` because they are all A3B MoE models. This one is dense.
+# Do not copy that flag in.
+#
+# NO --attention-backend EITHER. The qwen3.6 recipes in this dir pin flashinfer and
+# an earlier draft of this file copied that in. Removed deliberately: the official
+# Qwen3.8 recipe specifies no attention backend, and 48 of 64 layers here are Gated
+# DeltaNet linear attention rather than standard attention. Pinning a backend across
+# a hybrid stack is a load-failure risk with no measured upside. Engine default.
+#
+# MAMBA BACKEND LEFT AT DEFAULT (triton). The Gated DeltaNet layers use the Mamba
+# path, and the lightning recipe pins `--mamba-backend flashinfer` — but that was
+# measured for Mamba-2, and the Qwen3.8 recipe specifies no mamba flags at all.
+# Left at the engine default deliberately. This is the FIRST tuning knob to A/B.
+#
+# TOOL PARSER qwen3_coder, NOT qwen3_xml. The qwen3.6 recipes in this dir use
+# qwen3_xml; the official Qwen3.8 recipe says qwen3_coder. Both exist in 0.27.1
+# (checked against --help=all). Following the model's own recipe. If tool calls
+# come back malformed, qwen3_xml is the first thing to try.
+#
+# 1M CONTEXT: max_model_len below is the 262144 native value. To go to 1M this
+# model needs the override NESTED under text_config (the 2.4T takes it flat):
+#     --max-model-len 1010000 --hf-overrides '{"text_config": {"max_position_embeddings": 1010000}}'
+# Not enabled here — 262K first, raise it once there is a measured KV pool number.
+#
+# THINKING: on by default, reasoning_effort xhigh by default. For bake-off runs
+# hold this CONSTANT and state it — xhigh vs low changes token cost enormously
+# (this stack has been burned by enable_thinking token blowups before).
+# Per-request: chat_template_kwargs {"enable_thinking": false} / {"reasoning_effort": "low"}
+#
+# SAMPLING (from the model card, for whoever runs the comparison):
+#   thinking     temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 0.0
+#   non-thinking temperature 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5
+#
+# MULTIMODAL IS UNVERIFIED. The vision tower loads, but the official recipe says
+# plainly that text serving "is what this recipe covers and what has been verified."
+# Do not claim image/video support on this box until it has been probed here.
+recipe_version: "1"
+name: Qwen3.8-27B-NVFP4-MTP-Solo
+description: Single-Spark vLLM serving of Qwen3.8-27B NVFP4 (dense hybrid-attention, fp8 KV, MTP-3); 262K context, vision tower present but unverified
+model: /root/.cache/huggingface/local-models/Qwen3.8-27B-NVFP4
+container: vllm/vllm-openai:v0.27.1
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  # 0.50 matches every other solo recipe here. Weights are only 26.4 GB, so this
+  # leaves a large KV pool at 262K. NOT raised toward the 0.70 ceiling without a
+  # measured reason — headroom on this box is the difference between a bad run
+  # and a drive to the machine.
+  gpu_memory_utilization: 0.50
+  # 262144 = native. See the 1M note in the header before raising.
+  max_model_len: 262144
+  # Stack rule (concurrent tool-call corruption): max_num_seqs >= 2x
+  # num_speculative_tokens. Spec tokens = 3 here, so the floor is 6; 32 matches
+  # the other solo recipes and leaves room for concurrency sweeps.
+  max_num_seqs: 32
+  # 8192 is the stack standard and was A/B-measured as the better value on the
+  # lightning recipe (32768 tested and REJECTED there). Unmeasured for this model.
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Qwen3.8-27B-NVFP4 \
+    --served-model-name qwen3.8-27b \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+    --load-format fastsafetensors \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice

@@ -321,3 +321,38 @@ command: |
 ```
 
 This separation follows the Unix philosophy: `run-recipe.sh` provides convenience, while the underlying scripts remain focused on their specific tasks.
+
+## NAMING RULE for `--served-model-name` (added 2026-08-16 after an incident)
+
+**An eval / bake-off model MUST NOT be named as an extension of a prod served-model-name.**
+
+Bad:  `nemotron-3.5-lightning-bf16`   (contains the prod id `nemotron-3.5-lightning`)
+Good: `lightning-bf16-eval`, `qwen38-bf16-eval`
+
+### Why
+
+The swap and guard scripts historically decided what was running with a substring grep:
+
+    serving(){ curl -s :8000/v1/models | grep -q "$SERVED"; }
+
+Serving `nemotron-3.5-lightning-bf16` satisfied a grep for `nemotron-3.5-lightning`, and
+four safety layers failed at once:
+
+1. `swap-to-lightning.sh` took its "already serving -> skip reload" path and **never
+   restored prod**;
+2. it then repointed hermes' `.env` and wrote `.selected-stack` as if prod were up;
+3. hermes started and **404'd every request** — the id it targets did not exist on :8000;
+4. `prod-guard.sh`'s lightning hatch matched the same way, so the guard **stood down**
+   instead of self-healing.
+
+Nothing caught it, because every layer shared the one flaw.
+
+### What changed
+
+Those call sites now use `serving_exactly()` from `spark-ops/bin/lib/spark-model-id.sh`,
+which parses `/v1/models` and compares ids exactly. Regression test:
+`spark-ops/tests/test_exactmatch_helpers.sh`.
+
+**Keep the naming rule anyway.** Exact matching removes the failure, but a name that
+merely *looks* like prod in a log or a dashboard is still a trap for a human reading it at
+2am. Suffix eval builds with `-eval`.

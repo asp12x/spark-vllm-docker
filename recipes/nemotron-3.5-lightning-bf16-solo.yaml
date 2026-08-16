@@ -1,0 +1,113 @@
+# Recipe: Nemotron-3.5-Lightning-30B-A3B BF16 — SOLO / single GB10 — QUALITY BAKE-OFF
+#
+# The INCUMBENT side of the BF16 bake-off against qwen3.8-27b-bf16-solo.yaml.
+# Built 2026-08-15 on Andy's directive to run BF16 across the board.
+#
+# SOURCES (read 2026-08-15, do not configure this from memory):
+#   * HF card nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+#   * HF card nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 (for the contrast below)
+#
+# WHY THIS EXISTS -- the NVFP4-vs-NVFP4 comparison was NOT apples-to-apples.
+# Measured/read 2026-08-15:
+#
+#                        Lightning NVFP4            Qwen3.8 NVFP4 (Inferact)
+#   scheme               W4A16 (weight-only)        W4A4 (activations quantized too)
+#   GB10/DGX Spark       explicitly supported       NOT in supported_hardware
+#   calibration          static MSE, 1000 samples   none documented (1-line card)
+#                        @ 32k tokens
+#   fp8 KV               per-tensor dynamic scales  UNCALIBRATED (engine: "scaling
+#                        (calibrated)               factor 1.0")
+#
+# In other words the incumbent was running a calibrated weight-only quant on hardware
+# its vendor validated, while the challenger ran 4-bit ACTIVATIONS, uncalibrated, on
+# hardware absent from its support matrix. Speed conclusions survive that (dense-vs-MoE
+# dominates), but a QUALITY verdict from that pairing would have been unfair to Qwen3.8.
+# BF16 on both sides removes the entire asymmetry.
+#
+# NVIDIA agrees this is the build for the job. The BF16 card's own "Best For" row reads:
+# "Customization -- post-training (SFT, RL, distillation), domain adaptation, and
+# research/evaluation at full precision", and it directs deployment users to the NVFP4
+# release instead. We are evaluating, not deploying. This is the right checkpoint.
+#
+# NO --moe-backend marlin. Prod's NVFP4 recipe pins it and it must NOT be copied here:
+# marlin is a QUANTIZED-weight kernel. There are no quantized weights in this checkpoint.
+#
+# NO --kv-cache-dtype fp8, deliberately. "BF16 across the board" includes the KV cache.
+# Note this is a real change from prod: prod's fp8 KV came with CALIBRATED per-tensor
+# scales as part of NVIDIA's PTQ recipe, so dropping it here costs memory but removes a
+# numerical difference between the two sides of the bake-off.
+#
+# MAMBA FLAGS KEPT -- and this is a DELIBERATE, DOCUMENTED EXCEPTION to "BF16 everywhere".
+# --mamba-ssm-cache-dtype float16 is a reduced-precision SSM state cache. It stays because
+# NVIDIA's own BF16 quickstart prescribes exactly this set for the BF16 checkpoint:
+#     --mamba-backend flashinfer --mamba-ssm-cache-dtype float16 \
+#     --enable-mamba-cache-stochastic-rounding --mamba-cache-philox-rounds 5
+# The stochastic rounding exists precisely to unbias that fp16 write. Overriding the
+# manufacturer's recommended state-cache config on my own reasoning would be configuring
+# from memory against the docs -- the exact failure mode this stack guards against. If a
+# purist run is ever wanted, A/B it and record the number rather than assuming.
+# (--mamba-cache-mode align is carried over from the prod recipe.)
+#
+# SPECULATIVE DECODING IS QUALITY-NEUTRAL, so it stays for throughput.
+# Speculative decoding is distribution-preserving: drafts are verified against the target
+# model by rejection sampling, so the output distribution is the TARGET's regardless of
+# the drafter. Keeping DSpark therefore cannot bias a quality comparison -- it only buys
+# speed, which a BF16 run badly needs.
+# CAVEAT: the staged drafter is the NVFP4 DSpark checkpoint (there is no BF16 drafter
+# staged). Pairing an NVFP4 drafter with a BF16 target is fine for correctness by the
+# argument above, but it MAY refuse to load. If it does, drop the three
+# speculative_config lines and re-run -- do not go hunting for a fix mid-bake-off.
+# num_speculative_tokens 8 matches the drafter's own block_size (see the prod recipe's
+# reasoning; NVIDIA's card example of 3 contradicts their stated >= block_size rule).
+#
+# MEMORY BUDGET: weights ~61 GB (65.8 GB repo). util 0.65 of 128 GB = 83.2 GB leaves
+# ~22 GB for KV + activations. This model is hybrid Mamba + MoE, so most layers hold a
+# CONSTANT recurrent state rather than growing KV -- 131072 ctx is comfortable. Still
+# below the 0.70 GB10 ceiling; OOM-thrash here needs PHYSICAL recovery (no BMC).
+#
+# max_model_len 131072 MATCHES the Qwen3.8 BF16 recipe on purpose. Prod runs 1048576, but
+# an unequal context window between the two sides would be an uncontrolled variable, and
+# the bake-off tasks never approach either figure.
+recipe_version: "1"
+name: Nemotron-3.5-Lightning-30B-A3B-BF16-Solo
+description: Single-Spark vLLM serving of Nemotron 3.5 Lightning 30B-A3B in BF16 (bf16 KV, DSpark-8); incumbent side of the BF16 quality bake-off, 131072 ctx
+model: /root/.cache/huggingface/local-models/Nemotron-3.5-Lightning-30B-A3B-BF16
+container: vllm/vllm-openai:v0.27.1
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  # 0.65, not prod's 0.50: bf16 weights are ~61 GB and 0.50 (64 GB) leaves almost no KV.
+  gpu_memory_utilization: 0.65
+  max_model_len: 131072
+  # Stack rule: >= 2x num_speculative_tokens (8) => floor of 16. 32 matches the Qwen3.8
+  # BF16 recipe so both sides of the bake-off schedule identically.
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Nemotron-3.5-Lightning-30B-A3B-BF16 \
+    --served-model-name lightning-bf16-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --mamba-backend flashinfer \
+    --mamba-ssm-cache-dtype float16 \
+    --enable-mamba-cache-stochastic-rounding \
+    --mamba-cache-philox-rounds 5 \
+    --mamba-cache-mode align \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative_config.method dspark \
+    --speculative_config.model /root/.cache/huggingface/local-models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark \
+    --speculative_config.num_speculative_tokens 8 \
+    --reasoning-parser nemotron_v3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice

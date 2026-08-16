@@ -1,0 +1,106 @@
+# Recipe: Qwen3.8-27B BF16 — SOLO / single GB10 — QUALITY BAKE-OFF BUILD
+#
+# Companion to qwen3.8-27b-nvfp4-solo.yaml. This one exists to answer a DIFFERENT
+# question, and the two are not interchangeable:
+#
+#   nvfp4 recipe -> "what does this model do in a realistic deployment quant?"
+#   THIS recipe  -> "what is this model actually worth?" (zero quantization confound)
+#
+# Built 2026-08-15 on Andy's directive to run BF16 across the board.
+#
+# WHY BF16 IS THE RIGHT CALL FOR A *QUALITY* COMPARISON, despite being slower:
+# The NVFP4 build the official recipe names (Inferact) is labelled W4A4, and its
+# supported_hardware list is [b200, b300, gb200, gb300] -- GB10 IS NOT ON IT. It also
+# runs fp8 KV with NO calibrated k/v_scale (engine warns "scaling factor 1.0"; the
+# Inferact card documents no calibration at all). Measuring quality on that stack tells
+# you what one community quant does on an unvalidated box, not what Qwen3.8-27B is worth.
+# BF16 removes: 4-bit weights, 4-bit ACTIVATIONS, and uncalibrated fp8 KV. All of it.
+#
+# NOTE kv-cache-dtype IS DELIBERATELY ABSENT. "BF16 across the board" includes the KV
+# cache. The nvfp4 recipe passes --kv-cache-dtype fp8; copying that here would leave the
+# single largest remaining numerical confound in place. Do not add it back to "save
+# memory" -- size max_model_len instead (see below).
+#
+# EXPECT IT TO BE SLOW. Measured on this box 2026-08-15, NVFP4 W4A4 + MTP-3 was
+# 18.21 tok/s single-stream. BF16 is ~2x the bytes per weight read on a bandwidth-bound
+# GB10, so expect roughly 8-11 tok/s with MTP. That is the PRICE OF THE MEASUREMENT,
+# not a misconfiguration. Judge quality per token here; speed was already measured on
+# the nvfp4 recipe and belongs in that column.
+#
+# MEMORY BUDGET -- derived from a MEASURED number, not a guess.
+# The nvfp4 run reported "Available KV cache memory: 29.41 GiB / GPU KV cache size:
+# 828,902 tokens" at fp8 KV. That is 37.2 KiB/token at fp8, so ~74.4 KiB/token at bf16.
+#   weights                 51.7 GiB  (recipe metadata; 55.6 GB on disk)
+#   KV @ 131072 ctx, bf16  ~ 9.8 GiB
+#   total                  ~61.5 GiB = ~66 GB
+#   util 0.60 of 128 GB    = 76.8 GB  -> ~10 GB headroom
+# That keeps us well clear of the 0.70 GB10 ceiling. OOM-thrash on this box requires
+# PHYSICAL recovery (no BMC), so the headroom is the point.
+#
+# WHY max_model_len 131072 AND NOT 262144: the nvfp4 recipe runs the native 262144, but
+# bf16 KV is 2x fp8 per token and bf16 weights are ~2x nvfp4, so 262144 would need
+# ~19.5 GiB of KV and push utilization toward the ceiling for context the bake-off never
+# uses. The vLLM 2.4T recipe states the general rule plainly: "Size --max-model-len to
+# the workload." 131072 is ample for every bake-off task and for opencode coding runs.
+# THIS DIFFERS FROM THE NVFP4 RECIPE, so do not compare bf16-vs-nvfp4 speed numbers
+# across the two without saying so. BF16-vs-BF16 (this vs the lightning bf16 recipe) is
+# the comparison this file is built for, and both use 131072.
+#
+# MTP KEPT AT 3. The BF16 repo ships the same 15 mtp.* tensors. Depth 3 is not a guess:
+# the sibling Qwen3.8-2.4T recipe MEASURED MTP-1 at 64.8% acceptance and called it not
+# worth it (+3.4% at concurrency 1, -9% at 128, -23% at 256), with depth 3 worth ~2.3x
+# per-user. Note MTP forces cudagraph_mode down to PIECEWISE on this stack (spec-decode
+# is unsupported with FULL_AND_PIECEWISE on FlashInfer) -- that A/B is still open.
+#
+# NO --load-format fastsafetensors: it logged "GDS is not supported in this platform"
+# on the nvfp4 run and bought nothing. One less variable.
+#
+# NO --moe-backend: this is a DENSE model. Every other Qwen recipe here is A3B MoE.
+# NO --attention-backend: the official recipe pins none, and 48 of 64 layers are Gated
+# DeltaNet linear attention. The engine selects FlashInfer on its own.
+#
+# SAMPLING FOR THE ACTUAL COMPARISON (from the model card Best Practices, since the
+# quality answer depends on it):
+#   thinking      temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 0.0
+#   non-thinking  temperature 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5
+# The 2026-08-15 throughput runs used presence_penalty 0.0 in non-thinking mode, which is
+# NOT the card's recommendation. Fine for tok/s; re-run with 1.5 for quality claims.
+recipe_version: "1"
+name: Qwen3.8-27B-BF16-MTP-Solo
+description: Single-Spark vLLM serving of Qwen3.8-27B in full BF16 (bf16 KV, MTP-3, no quantization anywhere); quality bake-off build, 131072 ctx
+model: /root/.cache/huggingface/local-models/Qwen3.8-27B-BF16
+container: vllm/vllm-openai:v0.27.1
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  # 0.60, NOT the 0.50 the quantized recipes use: bf16 weights are ~51.7 GiB and simply
+  # do not leave a usable KV pool at 0.50 (64 GB - 55.5 GB = 8.5 GB). Still below the
+  # 0.70 ceiling. If the engine reports a KV pool under ~2x max_model_len, raise to 0.65
+  # rather than reaching for fp8 KV.
+  gpu_memory_utilization: 0.60
+  max_model_len: 131072
+  # >= 2x num_speculative_tokens (3) is the stack rule against concurrent tool-call
+  # corruption; 32 matches the other solo recipes.
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Qwen3.8-27B-BF16 \
+    --served-model-name qwen38-bf16-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice
