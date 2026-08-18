@@ -1,0 +1,94 @@
+# Recipe: Muse-Glimmer-30B BF16 — SOLO / single GB10 — ACCURACY BAKE-OFF BUILD
+#
+# Built 2026-08-17 on Andy's directive: BF16, accuracy-only. Sibling in intent to
+# qwen3.8-27b-bf16-solo.yaml — "what is this model actually worth?", zero quantization
+# confound. There is deliberately NO nvfp4 companion recipe: speed was explicitly out
+# of scope for this run, and the community NVFP4 quants have no published accuracy
+# recovery numbers, so they cannot answer a quality question anyway.
+#
+# ── WHY A DIFFERENT CONTAINER. READ THIS BEFORE "FIXING" IT. ────────────────────
+# container is vllm/vllm-openai:muse-glimmer, NOT the v0.27.1 the rest of the stack
+# runs. This is not a preference. VERIFIED 2026-08-17 inside the running v0.27.1
+# container:
+#     MuseGlimmerForConditionalGeneration registered: False   (367 archs, zero match)
+#     --tool-call-parser choices: ...no muse_glimmer, no onyx...
+# The published vLLM recipe claims "vLLM 0.27.0+" — that claim does not hold for the
+# released v0.27.1 image. Meta's day-0 support shipped in a dedicated tag instead
+# (pushed 2026-08-11), which is also what the RedHatAI quant card points at. There is
+# no v0.27.2 or v0.28.0 on Docker Hub to upgrade into. arm64 manifest confirmed
+# present (10.08 GB) — this tag WILL run on GB10; most vLLM side-tags are amd64-only,
+# so check that first if this ever gets repointed.
+#
+# ==> DO NOT set this recipe's container back to v0.27.1 to "match prod". It will
+#     fail at model load with an unknown-architecture error, not a warning.
+#
+# ── MEMORY BUDGET — from the REAL config.json, not the spec page. ───────────────
+# Read from the downloaded weights:
+#     layers 52 | num_key_value_heads 2 | head_dim 128 | max_position_embeddings 131072
+# KV per token at bf16 = 52 * 2 * 128 * 2(K+V) * 2 bytes = 53,248 B = 52 KiB/token.
+# Weights are 59.58 GB = ~55.5 GiB (BF16, 2 shards) + a 50-layer/1536-hidden vision
+# tower whose activations are NOT free.
+#     util 0.60 -> 71.5 GiB - 55.5 = ~16 GiB KV = ~322k tokens = 2.4x max_model_len
+#     util 0.65 -> 77.5 GiB - 55.5 = ~22 GiB KV = ~443k tokens = 3.4x max_model_len
+# 0.65 IS CHOSEN, not 0.60: this model's weights are ~4 GiB heavier than Qwen3.8-27B
+# BF16 (55.5 vs 51.7 GiB), so 0.60 leaves a thinner pool than the sibling recipe had,
+# and the vision tower has to fit in what's left. Still clear of the 0.70 GB10 ceiling.
+# OOM-thrash on this box needs PHYSICAL recovery (no BMC) — the headroom is the point.
+#
+# NO --kv-cache-dtype. "BF16 across the board" includes the KV cache; adding fp8 here
+# would reintroduce the single largest numerical confound the BF16 build exists to
+# remove. If the pool is ever too small, cut max_model_len — do not quantize KV.
+#
+# NO speculative decoding. The DFlash drafter (meta-models/Muse-Glimmer-30B-assistant,
+# 5.11 GB, num_speculative_tokens 15) is a THROUGHPUT feature and was cut with the
+# speed scope. It also ties embeddings to the target and would be one more variable in
+# a quality measurement. Add it back only for a speed run, in its own recipe.
+#
+# NO --trust-remote-code: the model card states it is not required, and the arch is
+# native to this image. One less variable.
+#
+# ── SAMPLING (matters for the quality answer; see the runner's caveat) ──────────
+# Muse Glimmer's own card / vLLM recipe: temperature 1.0, top_p 0.95, top_k 64.
+# It explicitly warns AGAINST greedy decoding, and documents that greedy is
+# non-deterministic here anyway. Those values are applied by the runner at request
+# time, NOT here — this file only serves the model.
+#
+# EOS OVERRIDE: REQUIRED. DO NOT REMOVE.
+# generation_config.json lists eos_token_id [200001, 200008]. 200008 is a CHANNEL
+# terminator, not end-of-turn. Left in the EOS set, vLLM stops generation at the end
+# of the reasoning segment and the model never reaches its tool-call channel --
+# measured: baseline finish=stop / 0 tool calls, vs stop_token_ids=[200001]
+# finish=tool_calls / 1 tool call on the identical prompt. This one line is why
+# drill D5 failed 0/3 at every precision, BF16 included.
+recipe_version: "1"
+name: Muse-Glimmer-30B-BF16-Solo
+description: Single-Spark vLLM serving of Meta Muse-Glimmer-30B in full BF16 (bf16 KV, no quantization, no spec-decode); accuracy bake-off build, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-BF16
+container: vllm/vllm-openai:muse-glimmer
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.65
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-BF16 \
+    --served-model-name muse-glimmer-bf16-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-call-parser muse_glimmer \
+    --enable-auto-tool-choice

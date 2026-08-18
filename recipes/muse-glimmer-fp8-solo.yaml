@@ -1,0 +1,78 @@
+# Recipe: Muse-Glimmer-30B FP8-block — SOLO / single GB10 — THE MIDDLE GROUND
+#
+# Third rung of the ladder. The other two are measured, not assumed:
+#   bf16  59.58 GB   4.5 tok/s   Phase 1 6/6   <- quality control
+#   nvfp4 23.38 GB  13.0 tok/s   Phase 1 5/6   <- loses D5 3/3, reproducibly
+#
+# WHY THIS BUILD EXISTS. NVFP4 (W4A4) quantizes weights AND ACTIVATIONS to 4 bit, and
+# the thing that broke on it is multi-part instruction following: drill D5 emits only
+# the "PLAN:" line, executes no tool, writes no file, and returns in 22-38s. D4 (file
+# edit + read-after-write) still PASSES on NVFP4, so tool use is not broken globally --
+# what is lost is "emit a structured preamble, THEN keep going", i.e. the core agentic
+# loop. FP8-block quantizes the WEIGHTS without the aggressive 4-bit activations, so it
+# directly tests whether activations are the cause.
+#
+# ==> THIS IS A HYPOTHESIS TEST, NOT A DEPLOYMENT. Two outcomes, both informative:
+#     * FP8 holds 6/6  -> activations were the cause; this is the sweet spot.
+#     * FP8 ALSO drops D5 -> activations are NOT the cause, and a self-quant with a
+#       gentler w4a16 unit will not rescue it either. Do not spend hours on a custom
+#       ModelOpt recipe before this run answers the question.
+#
+# EXPECTED, NOT MEASURED: ~33 GB vs 59.58 GB at bf16 is ~1.8x fewer bytes read per token
+# on a bandwidth-bound GB10, so roughly 8-9 tok/s. Treat as hypothesis until benched.
+#
+# MEMORY: weights ~33 GB (~30.7 GiB). util 0.55 of 128 GB = ~65.6 GiB leaves ~35 GiB of
+# KV; measured KV cost is ~18.5 KiB/token, so ~1.9M tokens -- far past the 131072 window.
+# Between the bf16 recipe's 0.65 and the nvfp4 recipe's 0.50, scaled to the weights.
+# Still well clear of the 0.70 GB10 ceiling: OOM-thrash here needs PHYSICAL recovery.
+#
+# NO --kv-cache-dtype and NO speculative decoding: the point is to change ONE variable
+# against the bf16 control. DFlash comes after a build is chosen.
+#
+# EOS OVERRIDE: REQUIRED. DO NOT REMOVE.
+# generation_config.json lists eos_token_id [200001, 200008]. 200008 is a CHANNEL
+# terminator, not end-of-turn. Left in the EOS set, vLLM stops generation at the end
+# of the reasoning segment and the model never reaches its tool-call channel --
+# measured: baseline finish=stop / 0 tool calls, vs stop_token_ids=[200001]
+# finish=tool_calls / 1 tool call on the identical prompt. This one line is why
+# drill D5 failed 0/3 at every precision, BF16 included.
+recipe_version: "1"
+name: Muse-Glimmer-30B-FP8-Solo
+description: Single-Spark vLLM serving of Muse-Glimmer-30B in FP8-block (weights quantized, activations not 4-bit); hypothesis test for the NVFP4 D5 regression, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-FP8
+container: vllm/vllm-openai:muse-glimmer
+cluster_only: false
+solo_only: true
+# DeepGEMM MUST be off for this checkpoint. Engine init otherwise dies with
+#   Assertion error (deepgemm-src/csrc/apis/layout.hpp:60): Unknown SF transformation
+# because DeepGEMM's FP8 scale-factor layouts do not cover this block-scaled format
+# on this hardware -- it asserts instead of falling back. This is the published
+# recipe's own Known Issue for FP8 and is not optional.
+env:
+  VLLM_USE_DEEP_GEMM: "0"
+  VLLM_MOE_USE_DEEP_GEMM: "0"
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.55
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-FP8 \
+    --served-model-name muse-glimmer-fp8-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-call-parser muse_glimmer \
+    --enable-auto-tool-choice
