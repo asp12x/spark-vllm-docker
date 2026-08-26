@@ -1,0 +1,193 @@
+# EVAL-NAMED ARM -- serves the PROMOTED qad-sftreason weights as `lightning-qad-sftreason-eval`.
+#
+# WHY: the prod lane deliberately reuses the stable id `nemotron-3.5-lightning` across every
+# promotion so the 10 Hermes configs / nightly / desktop app never need editing.
+# That means the served id cannot tell you WHICH build is loaded. This arm gives
+# the same weights a distinct id for when you need to address the build by name.
+#
+# !! REQUIRES A GUARD PAUSE !! prod-guard.sh line ~74 uses
+#   serving_exactly "nemotron-3.5-lightning"
+# so THIS id does NOT trip the lightning escape hatch. Without
+# `touch /home/asp/spark-ops/.prod-guard-pause` the guard will treat this as an
+# unexpected model and restore .selected-stack over it. Always run it inside a
+# window that holds the pause (eval_window.sh does this).
+#
+# Bring up:  cd ~/spark-vllm-docker && ./run-recipe.sh nemotron-3.5-lightning-nvfp4-qad-sftreason-eval-solo --solo
+#
+# Recipe: Nemotron-3.5-Lightning-30B-A3B-NVFP4 (DSpark) — SOLO / single GB10
+#
+# NVIDIA Nemotron 3.5 Lightning, released 2026-08-11. 30B total / 3B active,
+# hybrid Mamba-2 + MoE + select Attention. Successor to Nemotron-3-Nano-30B-A3B
+# (which this stack tried and REVERTED for fabrication — re-test that before trusting it).
+#
+# SOURCES (read 2026-08-11, do not configure this from memory):
+#   * HF card  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4  -> DGX Spark section
+#   * Cookbook github.com/NVIDIA-NeMo/Nemotron/usage-cookbook/Nemotron-3.5-Lightning/vllm_cookbook.ipynb
+#
+# IMAGE PIN — REQUIRED, NOT OPTIONAL: NVIDIA states minimum vLLM v0.27.1. The
+# stack's production pin is v0.25.1 (qwen3.6 MTP deadlock fix). 0.25.1 does NOT
+# know the nemotron_v3 reasoning parser, the dspark speculative method, or the
+# --mamba-* flags below. Do not "reuse the prod image" here.
+#
+# WHY marlin AND NOT humming: NVIDIA's cookbook (an H100 80GB notebook) uses
+#   --moe-backend humming --linear-backend humming
+# but NVIDIA's OWN DGX Spark command on the model card uses --moe-backend marlin.
+# This box is a single GB10; stack history is consistent that marlin is the
+# working NVFP4 MoE backend here and FlashInfer-MoE-FP4 fails. Marlin it is.
+# If a later run wants to try humming on GB10, treat it as a separate experiment.
+#
+# WHY DSpark: NVIDIA ships three drafters (MTP / DFlash / DSpark) and names
+# DSpark as the recommended one for DGX Spark + low-concurrency. IMPORTANT:
+# unlike MTP, DSpark is NOT built into the weights — it needs the SEPARATE
+# checkpoint below. The model card's Spark one-liner omits that; the cookbook
+# is the correct source, and we have the drafter staged locally either way.
+#
+# num_speculative_tokens = 8, AND THAT DISAGREES WITH NVIDIA'S OWN EXAMPLE.
+# Documented conflict, resolved in favour of the stated CONSTRAINT over the
+# sample value:
+#   * model card "1x DGX Spark (GB10)" command says ...num_speculative_tokens 3
+#   * cookbook says "num_speculative_tokens must be at least the draft
+#     checkpoint's dspark_block_size"
+#   * this drafter's config.json says  "block_size": 8
+#   * the drafter's own README benchmarks at "draft length 7"
+# 3 < 8, so the card's example contradicts the documented rule. We set 8.
+# If vLLM rejects 8 at startup, retry 7, then 3 — and record which one the
+# engine actually accepted rather than trusting either document.
+#
+# Stack rule (concurrent tool-call corruption): keep max_num_seqs >= 2x
+# num_speculative_tokens, i.e. >= 16 here. 32 below satisfies it.
+#
+# MAMBA CACHE FLAGS — full doc re-read 2026-08-11, all six NVIDIA configs compared.
+#
+# KEPT: --enable-mamba-cache-stochastic-rounding + --mamba-cache-philox-rounds 5.
+# NVIDIA pairs these with --mamba-ssm-cache-dtype float16 in BOTH H100 configs;
+# stochastic rounding compensates for fp16 SSM-state precision loss. Their DGX Spark
+# command does not set fp16 mamba cache at all (defaults fp32) so it does not need them
+# — but WE set fp16 (ASP-117 precedent), so without these we were running an fp16 cache
+# with no compensation, a combination NVIDIA recommends nowhere. MEASURED cost: none.
+#   conc32 585.28 -> 575.56 (-1.7%, noise) ; conc64 ~713 -> 712.21 (-0.2%)
+# Keep these on quality grounds regardless of throughput.
+#
+# REJECTED: --mamba-ssu-algorithm horizontal. DOES NOT RUN HERE — do not re-add.
+# It is not a slow option, it is a hard startup failure with speculative decoding:
+#   RuntimeError: invokeSelectiveStateUpdateMTP ... flashinfer/mamba/
+#   invoke_selective_state_update_mtp.cuh:179: horizontal algorithm does not support
+#   varlen (cu_seqlens)
+# The MTP/DSpark selective-state-update kernel batches varlen; horizontal has no varlen
+# path. Consistent with NVIDIA's own layout: their DGX Spark command OMITS this flag,
+# and the config where they use `horizontal` for max throughput has NO speculative
+# decoding. (Their H100 *interactive* config does pair horizontal+DSpark, but that is a
+# different GPU/FlashInfer path and omits chunked prefill — it does not port to GB10.)
+# We leave the flag unset; the engine logs "Using FlashInfer Mamba SSU algorithm: auto".
+# If DSpark is ever turned OFF here, horizontal becomes testable again.
+#
+# NOT ADOPTED (correctly): --moe-backend humming / --linear-backend humming belong to
+# NVIDIA's H100 and Ampere configs. Their DGX Spark command uses marlin. See above.
+#
+# fp8 KV vs auto — TESTED 2026-08-11, keeping fp8 (NVIDIA's Spark prescription).
+# The engine warns at startup:
+#   "Using uncalibrated q_scale 1.0 and/or prob_scale 1.0 with fp8 attention.
+#    This may cause accuracy issues."  (this warning is ABSENT with auto)
+# So it was measured rather than argued about. Greedy decode (temperature 0, seed 1234,
+# thinking off) over 20 verifiable-answer prompts -- /tmp/kv_quality_probe.py:
+#   correctness   fp8 19/20   vs   auto 19/20
+#   19 of 20 greedy outputs BIT-IDENTICAL; the lone divergence is the
+#     "spell necessary backwards" case, which BOTH get wrong (tokenization limit,
+#     not a KV artifact)
+#   conc32  595.84 vs 568.36 | conc64  720.79 vs 715.57   (all inside the noise band;
+#     conc32 has ranged 568-596 across runs of IDENTICAL configs)
+#   KV pool 11,980,137 vs 11,871,303 tokens -- fp8 buys only +0.9%
+#
+# NOTE THAT +0.9%: on a HYBRID model the pool is dominated by Mamba constant-size state,
+# not attention KV, so fp8 does NOT roughly double capacity the way it would on a pure
+# transformer. The usual reason to accept fp8's accuracy risk is mostly absent here.
+#
+# DECISION: keep fp8 — it is NVIDIA's prescribed Spark setting and the probe found no
+# harm; deviating from vendor config needs evidence, and there is none.
+# CAVEAT, do not oversell the result: those probe prompts are ~20 tokens, so they barely
+# exercise the KV cache. This is good evidence for short prompts and WEAK evidence for
+# long-context behaviour, which is exactly where an uncalibrated KV scale would bite.
+# If long-context output quality ever looks off, switching to auto is the first thing to
+# try — it costs ~0.9% KV and no measurable throughput.
+#
+# MEMORY POSTURE (GB10 has no BMC — an OOM-thrash means a physical trip to the box):
+# deliberately conservative for FIRST bring-up: util 0.50, 64K context, 32 seqs.
+# The model supports 1M context; raise only after this config is proven stable
+# and the free-memory headroom has been MEASURED.
+
+recipe_version: "1"
+name: Nemotron-3.5-Lightning-NVFP4-qad-sftreason-EVAL-Solo
+description: SAME WEIGHTS as the promoted prod lane, served under a DISTINCT id so a build can be addressed individually (2026-08-25).
+
+model: /root/.cache/huggingface/local-models/Nemotron-3.5-Lightning-30B-A3B-NVFP4-qad-sftreason
+
+# NVIDIA-stated minimum. See IMAGE PIN note above.
+# vLLM BUMP 2026-08-25 (Andy): eugr/spark-vllm 20260825 nightly — fixes the
+# /v1/responses streamed tool-arg loss (repro 20/20 vs 4/5 on 0.27.1), c1 +15%
+# (114 tok/s), tool_call 0.875, battery 5.00. Rollback = the v0.27.1 line below.
+container: eugr/spark-vllm:20260825-adopted
+# container: vllm/vllm-openai:v0.27.1   # pre-bump pin (NVIDIA stated minimum)
+cluster_only: false
+solo_only: true
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  # 1M native: config.json max_position_embeddings = 1048576, so this needs NO
+  # VLLM_ALLOW_LONG_MAX_MODEL_LEN (unlike the 120B, which had to be forced past 256K).
+  # MEASURED at 65536 on 2026-08-11 before raising: KV pool = 38.04 GiB =
+  # 4,815,215 tokens. That is ~4.6x a full 1M-token sequence, so 1M fits at this
+  # utilization with room to spare -- gpu_memory_utilization was NOT raised for it.
+  max_model_len: 1048576
+  # 64, raised from 32 and MEASURED 2026-08-11 (1M context, util 0.50, batched 8192).
+  # Aggregate tok/s: seqs32 conc32 = 579.0; seqs64 conc32 = 585.28 (no regression at
+  # the old operating point); seqs64 conc64 = 701.54, 725.51 (~713, +23%). KV pool
+  # also came out slightly LARGER (12,080,600 vs 11,795,956 tokens), mem unchanged.
+  # Near saturation: conc 8->32 gained 2.2x for 4x load, 32->64 only 1.23x for 2x,
+  # so 128 is unlikely to pay -- GB10 is bandwidth-bound. Keep >= 2x
+  # num_speculative_tokens (>=16 here) to avoid concurrent tool-call corruption.
+  max_num_seqs: 64
+  # KEPT AT 8192 -- 32768 was TESTED AND REJECTED 2026-08-11. Do not "fix" this
+  # by raising it to NVIDIA's cookbook value without re-measuring.
+  #
+  # vLLM emits a warning at 8192: max_num_scheduled_tokens collapses to 7968 once
+  # 8 DSpark draft slots are reserved, and it suggests raising max_num_batched_tokens.
+  # 32768 does silence the warning. It also buys NOTHING measurable, and costs KV.
+  # A/B, everything else held constant (util 0.50, max_model_len 1048576,
+  # max_num_seqs 32), aggregate tok/s at concurrency 32 (2 reps each):
+  #     8192  -> 582.13, 575.78  (mean 579.0)   KV pool 11,795,956 tokens
+  #     32768 -> 560.47, 583.06  (mean 571.8)   KV pool 10,114,138 tokens
+  # Single-stream was a wash at both (ranges overlap: 83.0-96.3 vs 84.8-99.0).
+  # So the warning is ADVISORY here, not a real bottleneck -- consistent with GB10
+  # being bandwidth-bound. 8192 keeps ~1.7M more KV tokens for identical speed.
+  max_num_batched_tokens: 8192
+
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Nemotron-3.5-Lightning-30B-A3B-NVFP4-qad-sftreason \
+    --served-model-name lightning-qad-sftreason-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --moe-backend marlin \
+    --mamba-backend flashinfer \
+    --mamba-ssm-cache-dtype float16 \
+    --enable-mamba-cache-stochastic-rounding \
+    --mamba-cache-philox-rounds 5 \
+    --mamba-cache-mode align \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative_config.method dspark \
+    --speculative_config.model /root/.cache/huggingface/local-models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark \
+    --speculative_config.num_speculative_tokens 8 \
+    --reasoning-parser nemotron_v3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice
