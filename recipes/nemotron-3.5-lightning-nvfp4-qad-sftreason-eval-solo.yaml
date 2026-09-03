@@ -125,7 +125,8 @@ model: /root/.cache/huggingface/local-models/Nemotron-3.5-Lightning-30B-A3B-NVFP
 # vLLM BUMP 2026-08-25 (Andy): eugr/spark-vllm 20260825 nightly — fixes the
 # /v1/responses streamed tool-arg loss (repro 20/20 vs 4/5 on 0.27.1), c1 +15%
 # (114 tok/s), tool_call 0.875, battery 5.00. Rollback = the v0.27.1 line below.
-container: eugr/spark-vllm:20260825-adopted
+container: eugr/spark-vllm:20260903-adopted
+# container: eugr/spark-vllm:20260825-adopted   # pre-bump pin (vLLM 0.26.1-dev, adopted 2026-08-25)
 # container: vllm/vllm-openai:v0.27.1   # pre-bump pin (NVIDIA stated minimum)
 cluster_only: false
 solo_only: true
