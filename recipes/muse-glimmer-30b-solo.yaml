@@ -1,0 +1,81 @@
+# Recipe: Muse-Glimmer-30B NVFP4 — SOLO / single GB10 — THROUGHPUT BUILD
+#
+# Companion to muse-glimmer-bf16-solo.yaml. The two answer DIFFERENT questions and are
+# not interchangeable:
+#   bf16 recipe  -> "what is this model actually worth?" (zero quantization confound)
+#   THIS recipe  -> "is it fast enough to actually use?"
+#
+# WHY THIS EXISTS. BF16 measured 4.5 tok/s on this box, and that single number caused
+# most of the 2026-08-18 boot-camp friction: turn ceilings, a 600s delegation timeout
+# blown by a 601s round-trip, drills that could not fit two edits. Quality was never the
+# problem — Phase 1 went 6/6 and reasoning scored 1.000. Speed was.
+#
+# EXPECTED, NOT MEASURED: ~20 GB of weights vs 55.5 GiB at bf16 is ~2.8x fewer bytes read
+# per token on a bandwidth-bound GB10, so roughly 12-13 tok/s. Treat that as a hypothesis
+# until the bench prints a number.
+#
+# ── THE QUANT IS THIRD-PARTY AND UNVALIDATED. THIS IS THE RISK. ─────────────────
+# RedHatAI/Muse-Glimmer-30B-NVFP4, llm-compressor, W4A4 (weights AND ACTIVATIONS at 4
+# bit) with the vision tower, embeddings and output head kept at original precision.
+# Red Hat maintains llm-compressor so it is about as credible as community quants get,
+# but the card publishes NO accuracy-recovery numbers. Meta ships no official quant at
+# all — the repo has ONE branch, BF16.
+#
+# ==> DO NOT TREAT THIS AS VALIDATED UNTIL PHASE 1 IS RE-RUN AGAINST IT. BF16 scored
+#     6/6; that is the control. Any drop is quantization damage and is attributable,
+#     because nothing else changed. W4A4 quantizes ACTIVATIONS, which is more aggressive
+#     than Lightning's W4A16 — if reasoning falls off 1.000, this is the first suspect,
+#     and RedHatAI also publishes an FP8 build as a middle ground.
+#
+# ── MEMORY ─────────────────────────────────────────────────────────────────────
+# Weights ~20 GB (~18.6 GiB) vs 55.5 GiB at bf16. util 0.50 of 128 GB = ~59.6 GiB leaves
+# ~41 GiB of KV — measured bf16 KV cost was 18.5 KiB/token, so ~2.3M tokens, far past the
+# 131072 window. Deliberately LOWER than the bf16 recipe's 0.65: the headroom is being
+# reserved for the DFlash drafter (5.11 GB) in the next step, and staying well under the
+# 0.70 GB10 ceiling matters because OOM-thrash here needs PHYSICAL recovery (no BMC).
+#
+# NO --kv-cache-dtype: NVFP4 weights already move the numerics; adding fp8 KV on top
+# would stack two confounds when the whole point is to attribute any quality delta.
+#
+# NO speculative decoding YET. DFlash is step 2 and gets measured separately, so the
+# quantization gain and the drafter gain stay distinguishable.
+#
+# EOS OVERRIDE: REQUIRED. DO NOT REMOVE.
+# generation_config.json lists eos_token_id [200001, 200008]. 200008 is a CHANNEL
+# terminator, not end-of-turn. Left in the EOS set, vLLM stops generation at the end
+# of the reasoning segment and the model never reaches its tool-call channel --
+# measured: baseline finish=stop / 0 tool calls, vs stop_token_ids=[200001]
+# finish=tool_calls / 1 tool call on the identical prompt. This one line is why
+# drill D5 failed 0/3 at every precision, BF16 included.
+recipe_version: "1"
+name: Muse-Glimmer-30B-Lane
+description: Single-Spark vLLM serving of Muse-Glimmer-30B in NVFP4 W4A4 (vision tower at original precision); throughput build, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4
+container: eugr/spark-vllm:20260903-adopted
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4 \
+    --served-model-name muse-glimmer-30b \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-call-parser muse_glimmer \
+    --enable-auto-tool-choice
