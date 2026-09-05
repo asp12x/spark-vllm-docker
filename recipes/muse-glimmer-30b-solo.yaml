@@ -47,6 +47,18 @@
 # measured: baseline finish=stop / 0 tool calls, vs stop_token_ids=[200001]
 # finish=tool_calls / 1 tool call on the identical prompt. This one line is why
 # drill D5 failed 0/3 at every precision, BF16 included.
+# PROMOTED 2026-09-04: official Meta DFlash drafter (Muse-Glimmer-30B-assistant,
+# block-16, 4.8 GB — the 'step 2' this recipe's util 0.50 reserved headroom for).
+# MEASURED in the 2026-09-04 window (bakeoff/muse-dflash-20260904): single-stream
+# 13.6 -> 24.6 tok/s prose / 33.2 code; c=3 aggregate 39.6 -> 64.0. Lossless
+# (verify-and-correct); tool-call and vision gates passed. Drill battery is the
+# promotion gate. Rollback = .bak-pre-dflash-20260904 next to this file.
+# PROMOTED 2026-09-05: DFlash2 drafter (incoai/Muse-Glimmer-30B-DFlash2, DFlash2DraftModel,
+# 5 layers, 5.54 GB BF16) replaces the Meta DFlash v1 drafter. MEASURED in the eval window
+# (bakeoff/muse-dflash2-20260905): single 23.5->29.0 prose / 31.7->42.6 code tok/s,
+# c=3 aggregate 62.8->73.4, mean acceptance 3.39->4.02; tool gate + vision gate + 40/40
+# structured tool probe all clean. Method stays "dflash" (arch auto-detected from the
+# drafter config). Rollback = .bak-pre-dflash2-20260905 next to this file.
 recipe_version: "1"
 name: Muse-Glimmer-30B-Lane
 description: Single-Spark vLLM serving of Muse-Glimmer-30B in NVFP4 W4A4 (vision tower at original precision); throughput build, 131072 ctx, multimodal
@@ -78,4 +90,5 @@ command: |
     --override-generation-config '{{"eos_token_id": [200001]}}' \
     --reasoning-parser muse_glimmer \
     --tool-call-parser muse_glimmer \
-    --enable-auto-tool-choice
+    --enable-auto-tool-choice \
+    --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-DFlash2", "num_speculative_tokens": 15}}'

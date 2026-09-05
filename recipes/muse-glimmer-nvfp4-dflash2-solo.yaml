@@ -1,0 +1,51 @@
+# Recipe: Muse-Glimmer-30B NVFP4 + DFlash2 drafter — EVAL build (2026-09-05)
+#
+# Answers ONE question vs the PROMOTED muse-glimmer-30b-solo recipe (official Meta
+# DFlash drafter, measured 23.5/31.7 tok/s single prose/code, 62.8 c=3 aggregate):
+# does the DFlash2 drafter (incoai/Muse-Glimmer-30B-DFlash2, mirror of
+# z-lab/Muse-Glimmer-30B-DFlash2, arch DFlash2DraftModel, 5 layers, 5.54 GB BF16)
+# buy more? Card claims acceptance 4.42-6.57 and 3.08x-4.62x @c=1 vs 5.43 / ~2x for
+# DFlash v1 -- gains fade by c=32, irrelevant at our c<=3.
+#
+# Manufacturer card (read 2026-09-05): method stays "dflash", num_speculative_tokens 15,
+# needs vLLM with PR 52816 + load fix PR 53435 (merged 08-25). Prod image
+# eugr/spark-vllm:20260903-adopted = 0.28.1rc1.dev345 built 09-03: VERIFIED to carry
+# qwen3_dflash2.py with the decoder_layer_cls indirection, and the registry maps
+# DFlash2DraftModel -> DFlash2Qwen3ForCausalLM (the same generic path Muse's v1
+# drafter already rides). Everything else (util 0.50, ctx, EOS override, parsers,
+# max-num-seqs 32) is byte-identical to the promoted recipe so any delta is the drafter.
+# Served id muse-dflash2-eval: no substring relation to any prod id.
+recipe_version: "1"
+name: Muse-Glimmer-30B-NVFP4-DFlash2-Solo
+description: Muse-Glimmer-30B NVFP4 + z-lab/incoai DFlash2 drafter (block-diffusion + local conv + candidate selector; 3B BF16); eval build, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4
+container: eugr/spark-vllm:20260903-adopted
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4 \
+    --served-model-name muse-dflash2-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-call-parser muse_glimmer \
+    --enable-auto-tool-choice \
+    --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-DFlash2", "num_speculative_tokens": 15}}' \
+    --per-request-spec-decode-metrics summary
