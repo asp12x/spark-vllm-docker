@@ -4,6 +4,11 @@
 # PROMOTED prod recipe flag-for-flag — including the official DFlash drafter,
 # which is lossless (verify-and-correct) so quality gates measure the model,
 # and speed numbers are apples-to-apples with prod. EOS override REQUIRED.
+# SALVAGE PARSER 2026-09-08: --tool-call-parser muse_glimmer_salvage (plugin in the HF cache,
+# source spark-vllm-docker/plugins/). Subclass of the image's muse_glimmer parser that fixes
+# the measured dotted-name / bare-body tool-call defect (terminal.command = 2.7% of Muse
+# calls in the 60-day store) at parse time; logs 'ATEM salvage' per fix. Rollback = the
+# .bak-pre-atem-salvage-20260908 copy, or swap the two flags back to muse_glimmer.
 recipe_version: "1"
 name: Muse-Glimmer-30B-NVFP4-Atem-Eval
 description: NVFP4 requant of the atem merge + DFlash drafter; eval arm, 131072 ctx, multimodal
@@ -34,6 +39,7 @@ command: |
     --generation-config auto \
     --override-generation-config '{{"eos_token_id": [200001]}}' \
     --reasoning-parser muse_glimmer \
-    --tool-call-parser muse_glimmer \
+    --tool-parser-plugin /root/.cache/huggingface/vllm-plugins/muse_glimmer_salvage_parser.py \
+    --tool-call-parser muse_glimmer_salvage \
     --enable-auto-tool-choice \
     --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-assistant", "num_speculative_tokens": 15}}'

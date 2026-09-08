@@ -3,6 +3,11 @@
 # (Lightning pilot discipline: attribute deltas to train vs quant separately).
 # Slow on purpose (~4.5 tok/s). EOS override REQUIRED (200008 = channel
 # terminator; drill D5's old 0/3). Eval id contains no prod id (substring trap).
+# SALVAGE PARSER 2026-09-08: --tool-call-parser muse_glimmer_salvage (plugin in the HF cache,
+# source spark-vllm-docker/plugins/). Subclass of the image's muse_glimmer parser that fixes
+# the measured dotted-name / bare-body tool-call defect (terminal.command = 2.7% of Muse
+# calls in the 60-day store) at parse time; logs 'ATEM salvage' per fix. Rollback = the
+# .bak-pre-atem-salvage-20260908 copy, or swap the two flags back to muse_glimmer.
 recipe_version: "1"
 name: Muse-Glimmer-30B-BF16-Atem-Eval
 description: Merged BF16 Muse atem adapter; eval arm, 131072 ctx, multimodal
@@ -33,5 +38,6 @@ command: |
     --generation-config auto \
     --override-generation-config '{{"eos_token_id": [200001]}}' \
     --reasoning-parser muse_glimmer \
-    --tool-call-parser muse_glimmer \
+    --tool-parser-plugin /root/.cache/huggingface/vllm-plugins/muse_glimmer_salvage_parser.py \
+    --tool-call-parser muse_glimmer_salvage \
     --enable-auto-tool-choice
