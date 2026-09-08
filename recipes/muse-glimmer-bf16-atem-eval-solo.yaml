@@ -1,0 +1,37 @@
+# Recipe: Muse-Glimmer-30B BF16 atem — EVAL ARM (Muse ATEM lane; clone of the charops recipe, model dir + served id renamed)
+# Serves the MERGED BF16 so training effect is measured before quantization
+# (Lightning pilot discipline: attribute deltas to train vs quant separately).
+# Slow on purpose (~4.5 tok/s). EOS override REQUIRED (200008 = channel
+# terminator; drill D5's old 0/3). Eval id contains no prod id (substring trap).
+recipe_version: "1"
+name: Muse-Glimmer-30B-BF16-Atem-Eval
+description: Merged BF16 Muse atem adapter; eval arm, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-BF16-atem
+container: eugr/spark-vllm:20260903-adopted
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.65
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-BF16-atem \
+    --served-model-name muse-bf16-atem-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-call-parser muse_glimmer \
+    --enable-auto-tool-choice
