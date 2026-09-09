@@ -1,0 +1,45 @@
+# Recipe: Muse-Glimmer-30B NVFP4 + NVFP4A16 lm_head — EVAL build (2026-09-09)
+#
+# Identical to the PROD recipe (muse-glimmer-30b-solo.yaml, NVFP4 DFlash2 drafter + salvage
+# tool parser) except: the TARGET checkpoint dir, the served id, and per-request spec metrics.
+# The ONLY variable under test is lm_head precision:
+#   Muse-Glimmer-30B-NVFP4         lm_head BF16 (2.69 GB, read every decode token)  = prod
+#   Muse-Glimmer-30B-NVFP4-lmhead  lm_head NVFP4A16 (config_groups.group_1 targets [lm_head]),
+#                                  everything else byte-identical (shard 1 hardlinked)
+# Built by posttrain/muse/bin/quantize_lm_head.py. The DFlash drafter shares the target's
+# lm_head module (llm_base_proposer._maybe_share_lm_head), so draft logits use it too.
+recipe_version: "1"
+name: Muse-Glimmer-30B-NVFP4-LMHead-Solo
+description: Muse-Glimmer-30B NVFP4 with NVFP4A16 lm_head + NVFP4 DFlash2 drafter; eval build, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4-lmhead
+container: eugr/spark-vllm:20260903-adopted
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4-lmhead \
+    --served-model-name muse-lmhead-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-parser-plugin /root/.cache/huggingface/vllm-plugins/muse_glimmer_salvage_parser.py \
+    --tool-call-parser muse_glimmer_salvage \
+    --enable-auto-tool-choice \
+    --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-DFlash2-NVFP4", "num_speculative_tokens": 15}}' \
+    --per-request-spec-decode-metrics summary

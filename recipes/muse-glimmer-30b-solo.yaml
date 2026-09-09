@@ -64,10 +64,22 @@
 # the measured dotted-name / bare-body tool-call defect (terminal.command = 2.7% of Muse
 # calls in the 60-day store) at parse time; logs 'ATEM salvage' per fix. Rollback = the
 # .bak-pre-atem-salvage-20260908 copy, or swap the two flags back to muse_glimmer.
+# PROMOTED 2026-09-09: NVFP4 (weight-only) DFlash2 drafter replaces the BF16 DFlash2 drafter.
+# Muse-Glimmer-30B-DFlash2-NVFP4 = 2.16 GB (from 5.54 GB): o_proj + MLPs + fc at NVFP4A16,
+# q/k/v + conv/selector BF16 (DFlash reads qkv_proj.weight raw for its fused context-KV GEMM).
+# MEASURED in the eval window (bakeoff/muse-dflash2q-20260909): single 28.8->32.1 prose /
+# 40.6->45.3 code tok/s, c=3 aggregate 67.6->83.0; acceptance 4.02->3.52 (n=1); gate1/gate2 ok,
+# 40/40 structured tool probe, parity 3 attributable of 8 (BF16: 4 of 8), 5 stress rounds clean.
+# Built by posttrain/muse/bin/quantize_dflash2_drafter.py. Rollback = .bak-pre-dflash2q-20260909.
+# PROMOTED 2026-09-09 (lm_head): target = Muse-Glimmer-30B-NVFP4-lmhead = the prod NVFP4 checkpoint
+# with lm_head at NVFP4A16 (2.69 GB BF16 -> 0.76 GB; shard 1 hardlinked to the original).
+# MEASURED (bakeoff/muse-lmhead-20260909) vs BF16 lm_head: single 31.6->38.9 prose / 50.1->62.2 code,
+# c=3 aggregate 80.3->95.1 tok/s; acceptance 3.52->3.73; gate1/gate2 ok; 40/40 probe; stress clean.
+# Built by posttrain/muse/bin/quantize_lm_head.py. Rollback = .bak-pre-lmhead-20260909.
 recipe_version: "1"
 name: Muse-Glimmer-30B-Lane
 description: Single-Spark vLLM serving of Muse-Glimmer-30B in NVFP4 W4A4 (vision tower at original precision); throughput build, 131072 ctx, multimodal
-model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4-lmhead
 container: eugr/spark-vllm:20260903-adopted
 cluster_only: false
 solo_only: true
@@ -80,7 +92,7 @@ defaults:
   max_num_seqs: 32
   max_num_batched_tokens: 8192
 command: |
-  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4 \
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4-lmhead \
     --served-model-name muse-glimmer-30b \
     --host {host} \
     --port {port} \
@@ -97,4 +109,4 @@ command: |
     --tool-parser-plugin /root/.cache/huggingface/vllm-plugins/muse_glimmer_salvage_parser.py \
     --tool-call-parser muse_glimmer_salvage \
     --enable-auto-tool-choice \
-    --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-DFlash2", "num_speculative_tokens": 15}}'
+    --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-DFlash2-NVFP4", "num_speculative_tokens": 15}}'
