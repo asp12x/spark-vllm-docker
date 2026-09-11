@@ -76,19 +76,11 @@
 # MEASURED (bakeoff/muse-lmhead-20260909) vs BF16 lm_head: single 31.6->38.9 prose / 50.1->62.2 code,
 # c=3 aggregate 80.3->95.1 tok/s; acceptance 3.52->3.73; gate1/gate2 ok; 40/40 probe; stress clean.
 # Built by posttrain/muse/bin/quantize_lm_head.py. Rollback = .bak-pre-lmhead-20260909.
-# PROMOTED 2026-09-11 (vLLM IMAGE): container eugr/spark-vllm:20260903-adopted (vLLM 0.28.1rc1 4cc0cb6f,
-# FlashInfer 0.6.18) -> eugr/spark-vllm:20260911-adopted (= nightly-20260911: vLLM main 8c1d1c29
-# post-v0.29.0, FlashInfer 0.7.0). Weights/drafter/flags unchanged. MEASURED (bakeoff/muse-v0911-20260911):
-# all gates PASS incl. salvage-parser unit test in-image; stress c=4 8k->512 25 -> 33.7 tok/s, TTFT
-# 14.1 -> 6.1 s; single code parity (n=5: 57.7-62.3 vs 56.8); c=3 94.7 -> 98.8-106. KV cache at util
-# 0.50 shrinks 31.2 -> 24.6 GiB (new profiler charges activation+cudagraph; still 8.4x at 131k) -- util
-# left at the tested 0.50. Nightly warts: /version reads 0.1.1.dev7 (scm fallback), harmless
-# 'Failed to load plugin b12x_loader' at startup. Rollback = .bak-pre-v0911-20260911.
 recipe_version: "1"
-name: Muse-Glimmer-30B-Lane
+name: Muse-Glimmer-30B-v0911-eval
 description: Single-Spark vLLM serving of Muse-Glimmer-30B in NVFP4 W4A4 (vision tower at original precision); throughput build, 131072 ctx, multimodal
 model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4-lmhead
-container: eugr/spark-vllm:20260911-adopted
+container: eugr/spark-vllm:nightly-20260911
 cluster_only: false
 solo_only: true
 defaults:
@@ -101,7 +93,7 @@ defaults:
   max_num_batched_tokens: 8192
 command: |
   vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4-lmhead \
-    --served-model-name muse-glimmer-30b \
+    --served-model-name muse-v0911-eval \
     --host {host} \
     --port {port} \
     --tensor-parallel-size {tensor_parallel} \
