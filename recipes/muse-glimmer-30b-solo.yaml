@@ -112,7 +112,7 @@ command: |
     --enable-chunked-prefill \
     --enable-prefix-caching \
     --generation-config auto \
-    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --override-generation-config '{{"eos_token_id": [200001], "temperature": 0.7, "top_p": 0.8, "top_k": 20}}' \
     --reasoning-parser muse_glimmer \
     --tool-parser-plugin /root/.cache/huggingface/vllm-plugins/muse_glimmer_salvage_parser.py \
     --tool-call-parser muse_glimmer_salvage \
