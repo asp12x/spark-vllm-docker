@@ -1,0 +1,40 @@
+# Recipe: Tess-4.5-27B-BF16 — EVAL / single GB10  (bake-off 2026-10-20)
+#
+# Full-precision control for the quant correctness gate: the NVFP4 self-quant is judged
+# against THIS, not against Lightning. Clone of the vetted qwen3.8-27b-bf16-solo (same
+# arch): bf16 KV, MTP-3, util 0.60, 131072 ctx. Expect ~11 tok/s — this build exists for
+# accuracy only; any tok/s it produces is not a benchmark.
+# Source = migtissera/Tess-4.5-27B flattened (hardlinked) into local-models.
+recipe_version: "1"
+name: Tess-4.5-27B-BF16-MTP-Eval-Solo
+description: Single-Spark vLLM serving of Tess-4.5-27B in full BF16 (bf16 KV, MTP-3, no quantization anywhere); quant-gate control build, 131072 ctx
+model: /root/.cache/huggingface/local-models/Tess-4.5-27B-BF16
+container: vllm/vllm-openai:v0.27.1
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.60
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Tess-4.5-27B-BF16 \
+    --served-model-name tess-bf16-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice

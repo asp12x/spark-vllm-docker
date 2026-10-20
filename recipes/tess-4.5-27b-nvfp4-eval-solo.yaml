@@ -1,0 +1,47 @@
+# Recipe: Tess-4.5-27B-NVFP4 — EVAL / single GB10  (bake-off 2026-10-20)
+#
+# migtissera/Tess-4.5-27B = fine-tune of Qwen/Qwen3.8-27B (Qwen3_5ForConditionalGeneration,
+# dense hybrid Gated-DeltaNet, native vision, built-in MTP head — 15 mtp.* tensors verified
+# in the BF16 index before download). Weights here are OUR OWN ModelOpt 0.45.0 self-quant
+# (NVIDIA dense qwen3_5 W4A16 NVFP4 + fp8 attn/kv recipe), produced by
+# spark-ops/bin/tess-window.sh; MTP + vision audited after export (graft if dropped).
+#
+# Clone of the vetted huihui-qwen38-27b-abliterated-nvfp4-solo (same arch, same quant path,
+# same image). Served id carries the -eval suffix on purpose: ids are compared EXACTLY by
+# every swap/guard script and this must never be mistaken for a prod lane.
+# Sampling for the accuracy battery is set per-request by the window (matched + thinking).
+recipe_version: "1"
+name: Tess-4.5-27B-NVFP4-MTP-Eval-Solo
+description: Single-Spark vLLM serving of Tess-4.5-27B self-quant NVFP4 (dense hybrid-attention, fp8 KV, MTP-3); 262K context; accuracy bake-off build
+model: /root/.cache/huggingface/local-models/Tess-4.5-27B-NVFP4
+container: vllm/vllm-openai:v0.27.1
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 262144
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Tess-4.5-27B-NVFP4 \
+    --served-model-name tess-nvfp4-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+    --load-format fastsafetensors \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice

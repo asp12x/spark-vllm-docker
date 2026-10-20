@@ -1,0 +1,46 @@
+# Recipe: Tess-4.5-27B-NVFP4 — LANE / single GB10  (lane kit 2026-10-20, Andy: "build a swap-to-tess lane kit")
+#
+# migtissera/Tess-4.5-27B (Qwen3.8-27B fine-tune, dense hybrid GDN, native vision, MTP head), OUR OWN
+# ModelOpt 0.45.0 NVFP4 self-quant (spark-ops/bin/tess-window.sh; MTP 15/15 + vision 333/333 audited).
+# MEASURED 2026-10-20 (spark-ops/bakeoff/tess-20261020): quant lossless vs BF16 on every objective dim;
+# vs Lightning: greedy 19/20 tie, tools 40/40 tie, coding 2/2 tie, reasoning .750 vs .625 (think off),
+# fabrication 1.0 vs .75; 20 tok/s c=1 / 87 c=8 (Lightning 73 / 171). KV pool 960,706 tok at util 0.50.
+#
+# Identical to tess-4.5-27b-nvfp4-eval-solo except the served id: this is the LANE id that the hermes
+# configs, prod-guard hatch and .selected-stack marker name. Ids are compared EXACTLY everywhere.
+# Swap in: spark-ops/bin/swap-to-tess.sh   Revert: spark-ops/bin/swap-to-supervl.sh
+recipe_version: "1"
+name: Tess-4.5-27B-NVFP4-MTP-Lane-Solo
+description: Single-Spark vLLM serving of Tess-4.5-27B self-quant NVFP4 (dense hybrid-attention, fp8 KV, MTP-3, native vision); 262K context; lane build
+model: /root/.cache/huggingface/local-models/Tess-4.5-27B-NVFP4
+container: vllm/vllm-openai:v0.27.1
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 262144
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Tess-4.5-27B-NVFP4 \
+    --served-model-name tess-4.5-27b \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+    --load-format fastsafetensors \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice
