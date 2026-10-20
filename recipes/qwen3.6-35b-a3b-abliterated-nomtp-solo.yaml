@@ -1,0 +1,48 @@
+# BAKE-OFF recipe qwen3.6-35b-a3b-abliterated-nomtp-solo -- generated 2026-07-26 from qwen3.6-35b-a3b-nvfp4-solo.yaml.
+# MTP spec-decode REMOVED: the abliterated challenger ships 0 MTP tensors (prod
+# ships 19), so MTP-on is impossible for it. Both sides run MTP-off here so the
+# comparison measures WEIGHTS, not a spec-decode advantage. Not for production.
+recipe_version: "1"
+name: qwen3.6-35b-a3b-abliterated-nomtp-solo
+description: Single-Spark vLLM serving of sakamakismile/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4 (marlin MoE, fp8 KV, MTP-3); multimodal text+image+video, 262K context
+
+# HuggingFace model to download (ungated -- no token required)
+model: sakamakismile/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4
+
+# Container image this config REQUIRES (>=0.25.1 fixes the MTP concurrency deadlock)
+container: vllm/vllm-openai:v0.25.1
+cluster_only: false
+solo_only: true
+
+# Spark-tuned defaults (measured; see header). 0.60 is the GB10 memory ceiling.
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.60
+  max_model_len: 262144
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+
+# The vLLM serve command template
+command: |
+  vllm serve sakamakismile/Huihui-Qwen3.6-35B-A3B-abliterated-NVFP4 \
+    --served-model-name qwen3.6-35b-a3b:abliterated \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --moe-backend marlin \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --load-format fastsafetensors \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice

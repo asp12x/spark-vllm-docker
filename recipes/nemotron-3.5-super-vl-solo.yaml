@@ -1,0 +1,76 @@
+# Nemotron 3.5 Super VL 120B-A12B NVFP4 -- PRODUCTION LANE recipe (built 2026-10-17, Andy: "build lane kit").
+# Served id: nemotron-3.5-super-vl  (no substring relation to any other id on this box: the eval id was
+# nemotron-3.5-super-vl-eval, which CONTAINS this one -- so every check must compare ids EXACTLY, never grep;
+# see spark-ops/bin/lib/spark-model-id.sh). Swap in: spark-ops/bin/swap-to-supervl.sh. Revert: swap-to-muse.sh.
+#
+# Weights nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 (HF sha 59b87216, released 2026-10-15), drafter
+# ...-NVFP4-LiLiCorr (sha 292bf1ef). Arch NemotronH_Omni_Reasoning_V3: Mamba-2 + MoE 512 experts (12B active) +
+# C-RADIO vision tower (BF16), 1M native ctx, calibrated FP8 KV scales. Needs vLLM >= 0.31; the model card's
+# vllm/vllm-openai:v0.32.0 tag does not exist -> eugr/spark-vllm:nightly-20261016 (vLLM 0.32.0rc1.dev301).
+#
+# Every flag below is MEASURED (bakeoff/nsvl-20261017{,-rep,-conc}/):
+#   quality   hard battery 8,8,7,7 over 4 runs (Muse mean 6/8; H8 vision counting 4/4 vs Muse 2/5); Phase 1 6/6;
+#             vision battery 10/11 (= Muse); structured tool probe 40/40.
+#   speed     single 25-26 prose / 32-37 code tok/s (Muse 41/56); per-AGENT-TURN e2e 17.1 s vs Muse 18.5 s
+#             (TTFT 10.7 vs 6.9 s, but 164 vs 276 generated tokens per turn); c=3 aggregate 44 tok/s; c=4 stress
+#             8192->512: 32 tok/s, TTFT 15.4 s, TPOT 89 ms, 0 preemptions.
+#   util 0.80 / seqs 8          eugr's upstream recipe (2026-10-15). KV 17.57 GiB = 359,592 tok = 3.1x @114688
+#                               (util 0.75 / seqs 1 = 13.51 GiB, 2.4x). Host MemAvailable floor under c=4 stress
+#                               = 10.6 GB -> NOTHING ELSE GPU-RESIDENT MAY COEXIST (LFM arm, ComfyUI models,
+#                               embedders). The swap script stops vllm-lfm-vision.service for this reason.
+#   ctx 114688                  the vLLM recipe table's 1x DGX Spark value; native is 1M but KV would not fit.
+#   LiLiCorr dflash K=7         NVIDIA's Spark drafter; 44-54% draft-token acceptance, ~3.8-4.7 accepted/draft.
+#   fp8 KV                      calibrated scales ship in hf_quant_config; engine auto-selects it anyway.
+#   instanttensor               cold load 471 s vs 1025 s with the default loader.
+#   limit-mm image 4 / video 1  default is 1 image per PROMPT and Hermes resends the whole conversation each turn,
+#                               so a second seeimage in a session would be refused; 3 images in one request verified.
+#   mamba fp16 + stochastic rounding + philox 5 + shared-prefix-checkpoint   model-card Spark command; vLLM sets
+#                               mamba cache mode 'align' itself when prefix caching is on (hit 52-83% measured).
+#   parsers nemotron_v3 / qwen3_coder   model card; thinking ON by default (template), temp 1.0 / top_p 0.95 card.
+#   thermal                     peaks 51 C GPU / 55 C zone here; forum power-offs at 81-85 C under sustained 32k+
+#                               prefill -> thermal-watch.service logs every zone and writes .thermal-alert.
+recipe_version: "1"
+name: Nemotron-3.5-Super-VL-120B-NVFP4-Lane
+description: PROD LANE - Nemotron 3.5 Super VL 120B-A12B NVFP4 with LiLiCorr DFlash drafter (util 0.80, seqs 8, 4 images/prompt, 114688 ctx)
+model: /root/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/snapshots/59b8721646c38111a242da18218859fb2b454322
+container: eugr/spark-vllm:nightly-20261016
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.80
+  max_model_len: 114688
+  max_num_seqs: 8
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/snapshots/59b8721646c38111a242da18218859fb2b454322 \
+    --served-model-name nemotron-3.5-super-vl \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --speculative_config.method dflash \
+    --speculative_config.model /root/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr/snapshots/292bf1efc06ba39567da7351f2ad7a522afa3959 \
+    --speculative_config.num_speculative_tokens 7 \
+    --mamba-backend flashinfer \
+    --mamba-ssm-cache-dtype float16 \
+    --enable-mamba-cache-stochastic-rounding \
+    --mamba-cache-philox-rounds 5 \
+    --enable-mamba-shared-prefix-checkpoint \
+    --mm-processor-cache-gb 0 \
+    --limit-mm-per-prompt '{{"image": 4, "video": 1}}' \
+    --video-pruning-rate 0.5 \
+    --media-io-kwargs '{{"video": {{"fps": 2, "num_frames": 256}}}}' \
+    --block-size 64 \
+    --prefix-match-unit 64 \
+    --load-format instanttensor \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --reasoning-parser nemotron_v3

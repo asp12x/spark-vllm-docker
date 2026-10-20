@@ -1,0 +1,59 @@
+# Recipe: Muse-Glimmer-30B NVFP4 + DFlash drafter — SOLO / single GB10 — SPEED STEP 2
+#
+# This is the "step 2" the nvfp4 recipe reserved headroom for: the OFFICIAL Meta
+# drafter (Muse-Glimmer-30B-assistant, DFlash block-diffusion, 5 layers, block_size 16,
+# 4.8 GB bf16, already in local-models). It predicts 16-token blocks that the target
+# verifies in parallel — LOSSLESS by construction (accept-or-correct), so quality risk
+# is mechanical (parser/tool-channel/vision interaction), not statistical. Gates below
+# in the window script, not here.
+#
+# Baseline to beat (MEASURED 2026-09-04 on prod muse-glimmer-30b, this same box):
+#   single-stream 13.6 tok/s (prose AND code — bandwidth-bound), c=3 aggregate 39.6.
+#
+# num_speculative_tokens 15 = block_size 16 minus the verified bonus token, mirroring
+# the qwen3.6 dflash recipe. max_num_seqs 32 >= 2x spec tokens (concurrent-agents rule).
+#
+# MEMORY: util 0.50 UNCHANGED. Weights ~18.6 GiB + drafter ~4.8 GiB + KV all fit in the
+# ~59.6 GiB pool; the nvfp4 recipe kept util at 0.50 (not 0.65) precisely to make this
+# drafter free to add. GB10 ceiling 0.70 — do not raise.
+#
+# EOS OVERRIDE: REQUIRED, same as parent recipe. 200008 is a channel terminator, not
+# end-of-turn; leaving it in EOS kills the tool-call channel (measured, drill D5).
+#
+# --per-request-spec-decode-metrics summary: EVAL ONLY. Exposes acceptance length /
+# draft acceptance rate in each response under metrics.speculative_decoding so the
+# window can print real acceptance numbers. Drop this flag if promoting to prod.
+recipe_version: "1"
+name: Muse-Glimmer-30B-NVFP4-DFlash-Solo
+description: Muse-Glimmer-30B NVFP4 + official Meta DFlash drafter (block-16 speculative decoding); eval build, 131072 ctx, multimodal
+model: /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4
+container: eugr/spark-vllm:20260903-adopted
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.50
+  max_model_len: 131072
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Muse-Glimmer-30B-NVFP4 \
+    --served-model-name muse-dflash-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --generation-config auto \
+    --override-generation-config '{{"eos_token_id": [200001]}}' \
+    --reasoning-parser muse_glimmer \
+    --tool-call-parser muse_glimmer \
+    --enable-auto-tool-choice \
+    --speculative-config '{{"method": "dflash", "model": "/root/.cache/huggingface/local-models/Muse-Glimmer-30B-assistant", "num_speculative_tokens": 15}}' \
+    --per-request-spec-decode-metrics summary

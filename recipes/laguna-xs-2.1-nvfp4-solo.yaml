@@ -1,0 +1,59 @@
+# BAKE-OFF recipe laguna-xs-2.1-nvfp4-solo -- generated 2026-08-10.
+# Challenger vs prod (qwen3.6-35b-a3b-abliterated-mtp-solo) on a single GB10.
+#
+# Sourced from the upstream recipe (recipes.vllm.ai/poolside/Laguna-XS-2.1) and the
+# model card shipped in the checkpoint. Notes that drove these flags:
+#   * NVFP4 quantization is auto-detected from quantization_config -- no --quantization.
+#   * The checkpoint ALSO carries an FP8-quantized KV cache. vLLM >= 0.22.0 required
+#     (we run 0.25.1); do NOT pass --kv-cache-dtype, it comes from the checkpoint.
+#   * Tool calling needs poolside_v1, which IS present in 0.25.1 (verified against
+#     `vllm serve --help=Frontend`). The glm47 fallback in the card is for older builds.
+#   * NO speculative decoding. Laguna's spec path is DFlash (a separate draft model,
+#     poolside/Laguna-XS-2.1-DFlash, num_speculative_tokens 15) and it requires a vLLM
+#     built from PR #46853, which is NOT in stable 0.25.1. Laguna ships no MTP head.
+#     => For a fair throughput number, compare against the -nomtp- prod recipe.
+#   * --moe-backend marlin to match prod's proven GB10 backend. (Upstream only calls
+#     for triton when DFlash spec-decode is on, which it is not here.)
+#   * gpu_memory_utilization 0.60: same as the prod no-MTP control. Laguna is 33B with
+#     SWA(512) on 30 of 40 layers, so its KV pool is far smaller than prod's. Do NOT
+#     raise this -- OOM-thrash on GB10 means physical recovery (no BMC).
+# NOT FOR PRODUCTION.
+
+recipe_version: "1"
+name: laguna-xs-2.1-nvfp4-solo
+description: Single-Spark vLLM serving of /root/.cache/huggingface/local-models/Laguna-XS-2.1-NVFP4 (33B-A3B MoE, 256 experts + 1 shared, mixed SWA/global attention, fp8 KV from checkpoint, no spec-decode); text-only, 262K context
+
+model: /root/.cache/huggingface/local-models/Laguna-XS-2.1-NVFP4
+
+container: vllm/vllm-openai:v0.25.1
+cluster_only: false
+solo_only: true
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.60
+  max_model_len: 262144
+  max_num_seqs: 32
+  max_num_batched_tokens: 8192
+
+command: |
+  vllm serve /root/.cache/huggingface/local-models/Laguna-XS-2.1-NVFP4 \
+    --served-model-name laguna-xs-2.1 \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --attention-backend flashinfer \
+    --moe-backend marlin \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --reasoning-parser poolside_v1 \
+    --tool-call-parser poolside_v1 \
+    --enable-auto-tool-choice

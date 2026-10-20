@@ -1,0 +1,52 @@
+# Nemotron 3.5 Super VL 120B-A12B NVFP4 -- CONCURRENCY eval recipe (2026-10-17, Andy: "do it" on the framework list).
+# Same weights/drafter/image as nemotron-3.5-super-vl-nvfp4-eval-solo.yaml (the model-card seqs-1 config). Differences =
+# eugr's upstream spark-vllm-docker recipe (2026-10-15) + the Hermes multi-image need:
+#   util 0.75 -> 0.80, max_num_seqs 1 -> 8, explicit --kv-cache-dtype fp8, --mm-processor-cache-gb 0,
+#   --load-format instanttensor, --limit-mm-per-prompt image 4 / video 1 (default is 1 image per PROMPT and Hermes resends
+#   the whole conversation each turn, so a second seeimage in a session would be refused at the default).
+# ctx stays 114688 and the served id stays nemotron-3.5-super-vl-eval so the window scripts/PREV lists apply unchanged.
+recipe_version: "1"
+name: Nemotron-3.5-Super-VL-120B-NVFP4-Conc-Eval
+description: Single-Spark vLLM serving of Nemotron 3.5 Super VL 120B-A12B NVFP4 with LiLiCorr DFlash drafter, concurrency variant (util 0.80, seqs 8, 4 images/prompt)
+model: /root/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/snapshots/59b8721646c38111a242da18218859fb2b454322
+container: eugr/spark-vllm:nightly-20261016
+cluster_only: false
+solo_only: true
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.80
+  max_model_len: 114688
+  max_num_seqs: 8
+  max_num_batched_tokens: 8192
+command: |
+  vllm serve /root/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/snapshots/59b8721646c38111a242da18218859fb2b454322 \
+    --served-model-name nemotron-3.5-super-vl-eval \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-seqs {max_num_seqs} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --speculative_config.method dflash \
+    --speculative_config.model /root/.cache/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr/snapshots/292bf1efc06ba39567da7351f2ad7a522afa3959 \
+    --speculative_config.num_speculative_tokens 7 \
+    --mamba-backend flashinfer \
+    --mamba-ssm-cache-dtype float16 \
+    --enable-mamba-cache-stochastic-rounding \
+    --mamba-cache-philox-rounds 5 \
+    --enable-mamba-shared-prefix-checkpoint \
+    --mm-processor-cache-gb 0 \
+    --limit-mm-per-prompt '{{"image": 4, "video": 1}}' \
+    --video-pruning-rate 0.5 \
+    --media-io-kwargs '{{"video": {{"fps": 2, "num_frames": 256}}}}' \
+    --block-size 64 \
+    --prefix-match-unit 64 \
+    --load-format instanttensor \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --reasoning-parser nemotron_v3
